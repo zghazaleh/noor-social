@@ -1,0 +1,50 @@
+name: Daily Instagram Post
+
+# Always-on daily verse poster. Runs in GitHub's cloud — no local machine
+# required. Posts one card per day from broadcast-queue.json.
+on:
+  schedule:
+    # 05:30 UTC == 09:30 Asia/Dubai. GitHub cron can drift ~5-15 min; fine for a daily post.
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Resolve + log without posting"
+        type: boolean
+        default: true
+      post_date:
+        description: "Override date (YYYY-MM-DD, optional)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write # to commit the daily post-log (also keeps the scheduled workflow from auto-disabling)
+
+concurrency:
+  group: daily-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Post today's verse
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          CARD_BASE_URL: https://raw.githubusercontent.com/${{ github.repository }}/main/
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          POST_DATE: ${{ github.event.inputs.post_date }}
+        run: python post_today.py
+      - name: Commit post log
+        run: |
+          git config user.name "noor-social-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add post-log.jsonl 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "log: daily post run $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push || true

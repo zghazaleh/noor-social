@@ -1,11 +1,18 @@
 name: Daily Instagram Post
 
+# PUBLISHING FROZEN. Do not restore the schedule or remove `if: false`
+# until this workflow is explicitly re-enabled. authenticated-ids.json is
+# the contract: post_today.py fail-closes on missing / off-list / missing-card.
+#
+# To re-enable later:
+#   1. Restore the `schedule` cron under `on:`.
+#   2. Delete the job-level `if: false`.
 # Always-on daily verse poster. Runs in GitHub's cloud — no local machine
 # required. Posts one card per day from broadcast-queue.json.
 on:
-  schedule:
-    # 05:30 UTC == 09:30 Asia/Dubai. GitHub cron can drift ~5-15 min; fine for a daily post.
-    - cron: "30 5 * * *"
+  # schedule:
+  #   # 05:30 UTC == 09:30 Asia/Dubai. GitHub cron can drift ~5-15 min; fine for a daily post.
+  #   - cron: "30 5 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -26,6 +33,7 @@ concurrency:
 
 jobs:
   post:
+    if: false # publishing frozen — remove this line only when explicitly re-enabling
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

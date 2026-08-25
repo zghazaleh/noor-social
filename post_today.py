@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """
-post_today.py — self-contained daily Instagram verse publisher for GitHub Actions.
+post_today.py — fail-closed daily Instagram verse publisher for GitHub Actions.
 
-Runs in the cloud (always-on), independent of any local machine. Reads the
-day's entry from broadcast-queue.json, builds the public card image URL from
-this repo's own raw.githubusercontent path, and posts via the Instagram Graph
-API (two-step: create container → publish).
+Reads today's entry from broadcast-queue.json (Asia/Dubai unless POST_DATE is
+set). Posts only if every gate passes. Never substitutes another poem ID,
+never invents verse text, never posts a missing card.
 
-Config via environment (set as GitHub Actions secrets / workflow env):
+Fail-closed gates (any miss → exit 1, no post):
+  - no queue entry for today (poem_id missing)
+  - entry has no poem_id
+  - poem_id is not in authenticated-ids.json
+  - card_path is missing or the PNG is not on disk
+
+Config via environment (GitHub Actions secrets / workflow env):
   IG_ACCESS_TOKEN  — Instagram Graph API long-lived token        (secret)
   IG_USER_ID       — Instagram business account id               (secret)
   CARD_BASE_URL    — public raw base, e.g.
@@ -15,8 +20,8 @@ Config via environment (set as GitHub Actions secrets / workflow env):
   DRY_RUN          — "true" to resolve + print without posting    (optional)
   POST_DATE        — ISO date override (default: today, Asia/Dubai) (optional)
 
-Exit codes: 0 = posted or nothing-due (both fine for a daily cron);
-            1 = misconfig or API failure.
+Exit codes: 0 = posted or successful dry-run;
+            1 = miss, misconfig, or API failure.
 """
 from __future__ import annotations
 
@@ -30,6 +35,7 @@ from pathlib import Path
 DUBAI = timezone(timedelta(hours=4))
 ROOT = Path(__file__).resolve().parent
 QUEUE = ROOT / "broadcast-queue.json"
+ALLOWLIST = ROOT / "authenticated-ids.json"
 LOG = ROOT / "post-log.jsonl"
 GRAPH = "https://graph.instagram.com/v23.0"
 
@@ -41,11 +47,93 @@ def log(rec: dict) -> None:
     print(json.dumps({k: v for k, v in rec.items() if k != "caption"}, ensure_ascii=False))
 
 
-def entry_for(target: str) -> dict | None:
-    data = json.loads(QUEUE.read_text(encoding="utf-8"))
+def load_allowlist(path: Path = ALLOWLIST) -> set[str]:
+    if not path.is_file():
+        raise FileNotFoundError(f"allowlist missing: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    ids = data.get("ids")
+    if not isinstance(ids, list) or not ids:
+        raise ValueError(f"allowlist empty or malformed: {path}")
+    return {str(i) for i in ids}
+
+
+def entry_for(target: str, queue_path: Path = QUEUE) -> dict | None:
+    data = json.loads(queue_path.read_text(encoding="utf-8"))
     for e in data.get("queue", []):
         if (e.get("scheduled_for") or "")[:10] == target:
             return e
+    return None
+
+
+def evaluate_entry(
+    target: str,
+    entry: dict | None,
+    allow: set[str],
+    root: Path = ROOT,
+) -> dict | None:
+    """Return a miss record to log, or None if the entry is safe to post.
+
+    Fail closed: never pick a substitute ID.
+    """
+    if not entry:
+        return {
+            "date": target,
+            "status": "miss",
+            "reason": "missing_poem_id",
+            "note": "no queue entry for today — fail closed, no substitute",
+        }
+
+    poem_id = str(entry.get("poem_id") or "").strip()
+    if not poem_id:
+        return {
+            "date": target,
+            "status": "miss",
+            "reason": "missing_poem_id",
+            "note": "queue entry has no poem_id — fail closed, no substitute",
+        }
+
+    if poem_id not in allow:
+        return {
+            "date": target,
+            "status": "miss",
+            "reason": "not_in_allowlist",
+            "poem_id": poem_id,
+            "note": "poem_id is not on authenticated-ids.json — fail closed, no substitute",
+        }
+
+    card_path = str(entry.get("card_path") or "").strip()
+    if not card_path:
+        return {
+            "date": target,
+            "status": "miss",
+            "reason": "missing_card",
+            "poem_id": poem_id,
+            "note": "queue entry has no card_path — fail closed, no substitute",
+        }
+
+    card_file = (root / card_path).resolve()
+    try:
+        card_file.relative_to(root.resolve())
+    except ValueError:
+        return {
+            "date": target,
+            "status": "miss",
+            "reason": "missing_card",
+            "poem_id": poem_id,
+            "card_path": card_path,
+            "note": "card_path escapes repo root — fail closed, no substitute",
+        }
+
+    if not card_file.is_file():
+        return {
+            "date": target,
+            "status": "miss",
+            "reason": "missing_card",
+            "poem_id": poem_id,
+            "card_path": card_path,
+            "note": "card PNG is not on disk — fail closed, no substitute",
+        }
+
     return None
 
 
@@ -53,19 +141,39 @@ def main() -> int:
     target = os.environ.get("POST_DATE") or datetime.now(DUBAI).date().isoformat()
     dry = os.environ.get("DRY_RUN", "").lower() == "true"
 
-    entry = entry_for(target)
-    if not entry:
-        log({"date": target, "status": "no_entry",
-             "note": "queue exhausted or no card scheduled — refill broadcast-queue.json"})
-        return 0
+    try:
+        allow = load_allowlist()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        log({"date": target, "status": "miss", "reason": "allowlist_unreadable",
+             "error": str(exc), "note": "cannot fail-close without authenticated-ids.json"})
+        return 1
 
+    if not QUEUE.is_file():
+        log({"date": target, "status": "miss", "reason": "missing_poem_id",
+             "note": "broadcast-queue.json is missing — fail closed, no substitute"})
+        return 1
+
+    try:
+        entry = entry_for(target)
+    except (OSError, json.JSONDecodeError) as exc:
+        log({"date": target, "status": "miss", "reason": "queue_unreadable",
+             "error": str(exc)})
+        return 1
+
+    miss = evaluate_entry(target, entry, allow)
+    if miss:
+        log(miss)
+        return 1
+
+    assert entry is not None
     base = os.environ.get("CARD_BASE_URL", "").rstrip("/") + "/"
     image_url = base + entry["card_path"].lstrip("./")
     caption = entry.get("instagram_caption") or entry.get("english") or ""
 
     if dry:
         log({"date": target, "status": "dry_run", "poet": entry.get("poet"),
-             "image_url": image_url, "caption_len": len(caption), "caption": caption})
+             "poem_id": entry.get("poem_id"), "image_url": image_url,
+             "caption_len": len(caption), "caption": caption})
         return 0
 
     token = os.environ.get("IG_ACCESS_TOKEN")
@@ -102,7 +210,8 @@ def main() -> int:
         return 1
 
     log({"date": target, "status": "posted", "poet": entry.get("poet"),
-         "genre": entry.get("genre"), "media_id": pub.json().get("id"), "image_url": image_url})
+         "poem_id": entry.get("poem_id"), "genre": entry.get("genre"),
+         "media_id": pub.json().get("id"), "image_url": image_url})
     return 0
 
 

@@ -15,7 +15,8 @@ scheduled GitHub Action posts one authenticated verse card per day from
 authenticated-ids.json ──┐
 broadcast-queue.json     ─┤
 assets/profile/feed-v2/*.png ┤→  GitHub Action (disabled)  →  Instagram Graph API
-post_today.py            ─┘        post_today.py                    @nooralhikmahapp
+assets/profile/feed/*.png    ┤        post_today.py                    @nooralhikmahapp
+post_today.py            ─┘
 ```
 
 - **`authenticated-ids.json`** — copy of the product allowlist (264 IDs). The Action fail-closes against this file so it does not need the private app repo.
@@ -38,7 +39,7 @@ The workflow stays disabled. After it is explicitly re-enabled: Actions → **Da
 
 ## Monthly maintenance (the only recurring task)
 
-Only IDs on `authenticated-ids.json` may be queued, and only when a card PNG already exists. Do not pad with off-list IDs or invent cards / verses.
+Only IDs on `authenticated-ids.json` may be queued, and only when a card PNG already exists in `assets/profile/feed-v2/` or `assets/profile/feed/`. Prefer feed-v2 when both exist. Do not pad with off-list IDs (22 of 30 feed-v2 cards are off-list) or invent cards / verses. Queue length is the number of certified IDs that already have a PNG.
 
 ```bash
 python3 ~/Noor-Engine/scripts/build_content_queue.py     # next calendar from the allowlist

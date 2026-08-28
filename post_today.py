@@ -10,13 +10,17 @@ Fail-closed gates (any miss → exit 1, no post):
   - no queue entry for today (poem_id missing)
   - entry has no poem_id
   - poem_id is not in authenticated-ids.json
-  - card_path is missing or the PNG is not on disk
+  - card_path is missing, is not a .png, or HEAD of
+    CARD_BASE_URL + card_path is not HTTP 200 with an image/png content-type
+
+Site cards are not in this repo. A local-file check would block every post.
+The gate is a HEAD of the public URL.
 
 Config via environment (GitHub Actions secrets / workflow env):
   IG_ACCESS_TOKEN  — Instagram Graph API long-lived token        (secret)
   IG_USER_ID       — Instagram business account id               (secret)
-  CARD_BASE_URL    — public raw base, e.g.
-                     https://raw.githubusercontent.com/<owner>/noor-social/main/
+  CARD_BASE_URL    — public site base with trailing slash, e.g.
+                     https://nooralhikmah.com/
   DRY_RUN          — "true" to resolve + print without posting    (optional)
   POST_DATE        — ISO date override (default: today, Asia/Dubai) (optional)
 
@@ -29,8 +33,11 @@ import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Callable
 
 DUBAI = timezone(timedelta(hours=4))
 ROOT = Path(__file__).resolve().parent
@@ -38,6 +45,11 @@ QUEUE = ROOT / "broadcast-queue.json"
 ALLOWLIST = ROOT / "authenticated-ids.json"
 LOG = ROOT / "post-log.jsonl"
 GRAPH = "https://graph.instagram.com/v23.0"
+HEAD_TIMEOUT = 20
+HEAD_UA = "noor-social-post-today/1.0"
+PNG_TYPES = frozenset({"image/png", "image/x-png"})
+
+HeadFn = Callable[[str], tuple[int | None, str]]
 
 
 def log(rec: dict) -> None:
@@ -65,15 +77,47 @@ def entry_for(target: str, queue_path: Path = QUEUE) -> dict | None:
     return None
 
 
+def public_card_url(card_path: str, base: str | None = None) -> str:
+    if base is None:
+        base = os.environ.get("CARD_BASE_URL", "")
+    return base.rstrip("/") + "/" + card_path.lstrip("./")
+
+
+def is_png_content_type(content_type: str) -> bool:
+    mime = (content_type or "").split(";")[0].strip().lower()
+    return mime in PNG_TYPES
+
+
+def head_card_url(url: str, timeout: float = HEAD_TIMEOUT) -> tuple[int | None, str]:
+    """HEAD a public card URL. Returns (status, content-type). Never raises."""
+    req = urllib.request.Request(
+        url,
+        method="HEAD",
+        headers={"User-Agent": HEAD_UA},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return int(resp.status), resp.headers.get("Content-Type", "") or ""
+    except urllib.error.HTTPError as exc:
+        ctype = ""
+        if exc.headers is not None:
+            ctype = exc.headers.get("Content-Type", "") or ""
+        return int(exc.code), ctype
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None, ""
+
+
 def evaluate_entry(
     target: str,
     entry: dict | None,
     allow: set[str],
-    root: Path = ROOT,
+    card_base_url: str = "",
+    head_fn: HeadFn | None = None,
 ) -> dict | None:
     """Return a miss record to log, or None if the entry is safe to post.
 
-    Fail closed: never pick a substitute ID.
+    Fail closed: never pick a substitute ID. Card presence is a HEAD of
+    CARD_BASE_URL + card_path (site cards are not in this repo).
     """
     if not entry:
         return {
@@ -111,27 +155,41 @@ def evaluate_entry(
             "note": "queue entry has no card_path — fail closed, no substitute",
         }
 
-    card_file = (root / card_path).resolve()
-    try:
-        card_file.relative_to(root.resolve())
-    except ValueError:
+    if not card_path.lower().endswith(".png"):
         return {
             "date": target,
             "status": "miss",
             "reason": "missing_card",
             "poem_id": poem_id,
             "card_path": card_path,
-            "note": "card_path escapes repo root — fail closed, no substitute",
+            "note": "card URL is not a PNG — fail closed, no substitute",
         }
 
-    if not card_file.is_file():
+    base = (card_base_url or "").strip()
+    if not base:
         return {
             "date": target,
             "status": "miss",
             "reason": "missing_card",
             "poem_id": poem_id,
             "card_path": card_path,
-            "note": "card PNG is not on disk — fail closed, no substitute",
+            "note": "CARD_BASE_URL is not set — fail closed, no substitute",
+        }
+
+    image_url = public_card_url(card_path, base)
+    fn = head_fn or head_card_url
+    status, content_type = fn(image_url)
+    if status != 200 or not is_png_content_type(content_type):
+        return {
+            "date": target,
+            "status": "miss",
+            "reason": "missing_card",
+            "poem_id": poem_id,
+            "card_path": card_path,
+            "image_url": image_url,
+            "http": status,
+            "content_type": content_type,
+            "note": "card PNG is not a public image/png (HEAD) — fail closed, no substitute",
         }
 
     return None
@@ -140,6 +198,7 @@ def evaluate_entry(
 def main() -> int:
     target = os.environ.get("POST_DATE") or datetime.now(DUBAI).date().isoformat()
     dry = os.environ.get("DRY_RUN", "").lower() == "true"
+    base = os.environ.get("CARD_BASE_URL", "")
 
     try:
         allow = load_allowlist()
@@ -160,14 +219,13 @@ def main() -> int:
              "error": str(exc)})
         return 1
 
-    miss = evaluate_entry(target, entry, allow)
+    miss = evaluate_entry(target, entry, allow, card_base_url=base)
     if miss:
         log(miss)
         return 1
 
     assert entry is not None
-    base = os.environ.get("CARD_BASE_URL", "").rstrip("/") + "/"
-    image_url = base + entry["card_path"].lstrip("./")
+    image_url = public_card_url(entry["card_path"], base)
     caption = entry.get("instagram_caption") or entry.get("english") or ""
 
     if dry:

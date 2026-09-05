@@ -1,8 +1,14 @@
 name: Daily Instagram Post
 
-# Always-on daily verse poster. Runs in GitHub's cloud — no local machine
-# required. Posts one card per day from broadcast-queue.json.
+# Fail-closed daily verse poster. 05:30 UTC == 09:30 Asia/Dubai.
+#
+# DO NOT Enable this workflow in the Actions UI until IG_ACCESS_TOKEN and
+# IG_USER_ID are minted by CoS and stored as repository secrets. Empty
+# secrets fail the job (no post, no invented token). The schedule below is
+# ready; Enable is a human step after secrets exist.
+#
 # Images are fetched from https://nooralhikmah.com/cards/{id}.png (not GitHub raw).
+# Captions are queued fields verified against https://nooralhikmah.com/poems/{id}.
 on:
   schedule:
     # 05:30 UTC == 09:30 Asia/Dubai. GitHub cron can drift ~5-15 min; fine for a daily post.
@@ -10,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Resolve + log without posting"
+        description: "Resolve + log without posting (leave on until secrets are real)"
         type: boolean
         default: true
       post_date:
@@ -34,6 +40,17 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install requests
+      - name: Fail loudly if Meta secrets are empty (real post only)
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.dry_run == 'false' }}
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: |
+          if [ -z "${IG_ACCESS_TOKEN}" ] || [ -z "${IG_USER_ID}" ]; then
+            echo "::error::IG_ACCESS_TOKEN / IG_USER_ID are empty. Fail closed — no post, no invented token."
+            echo "Do not Enable the Daily Instagram Post schedule until CoS mints both secrets."
+            exit 1
+          fi
       - name: Post today's verse
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}

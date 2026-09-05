@@ -1,0 +1,32 @@
+name: Publish contract tests
+
+# Unit + live-site contract tests. Does not post. Safe to keep enabled.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Allowlist integrity (264, denylist empty)
+        env:
+          NOOR_PRIVATE_READ_TOKEN: ${{ secrets.NOOR_PRIVATE_READ_TOKEN }}
+        run: python3 sync_allowlist.py --check
+      - name: Unit + live contract tests
+        env:
+          CARD_BASE_URL: https://nooralhikmah.com/
+        run: python3 -m unittest test_post_today.py -v
+      - name: Preflight next 14 days (shape only)
+        env:
+          CARD_BASE_URL: https://nooralhikmah.com/
+        run: python3 preflight.py --days 14 --skip-live

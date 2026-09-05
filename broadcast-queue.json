@@ -3,7 +3,7 @@
   "timezone": "Asia/Dubai",
   "starts_on": "2026-08-26",
   "days": 40,
-  "note": "Fail-closed calendar. A day is included only when poem_id is on authenticated-ids.json (264) and verse text is copied from shipping JSON. card_path is cards/{poem_id}.png on https://nooralhikmah.com/. Queue is not padded with off-list IDs. Do not invent verses.",
+  "note": "Fail-closed calendar. A day is included only when poem_id is on authenticated-ids.json (264), is not on the hard denylist (Qabbani 1370-1373/1491-1493/1607-1608, generated 1851-1857, off-list 1507/1543/1858), and verse text is copied from shipping JSON or the live /poems/{id} page. card_path is cards/{poem_id}.png on https://nooralhikmah.com/. Queue is not padded with off-list IDs. Do not invent verses.",
   "queue": [
     {
       "scheduled_for": "2026-08-26",

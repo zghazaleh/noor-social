@@ -1,0 +1,38 @@
+name: Queue preflight (14 days)
+
+# Live check of upcoming queue days: allowlist, denylist, PNG HEAD, caption.
+# Does not post. Safe to keep enabled.
+on:
+  schedule:
+    # 04:00 UTC == 08:00 Asia/Dubai — 90 minutes before the daily post slot.
+    - cron: "0 4 * * *"
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "How many upcoming days to check"
+        type: string
+        default: "14"
+      start:
+        description: "First ISO date (empty = today Asia/Dubai)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Live preflight
+        env:
+          CARD_BASE_URL: https://nooralhikmah.com/
+        run: |
+          DAYS="${{ github.event.inputs.days }}"
+          START="${{ github.event.inputs.start }}"
+          python3 preflight.py --days "${DAYS:-14}" ${START:+--start "$START"}

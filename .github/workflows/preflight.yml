@@ -1,6 +1,9 @@
 name: Queue preflight (14 days)
 
 # Live check of upcoming queue days: allowlist, denylist, PNG HEAD, caption.
+# Also a token health check (job `token-health`): GET /me with IG_ACCESS_TOKEN
+# and require the returned user_id to equal IG_USER_ID, so a bad token fails
+# visibly ~90 minutes before the daily post instead of during it.
 # Does not post. Safe to keep enabled.
 on:
   schedule:
@@ -36,3 +39,22 @@ jobs:
           DAYS="${{ github.event.inputs.days }}"
           START="${{ github.event.inputs.start }}"
           python3 preflight.py --days "${DAYS:-14}" ${START:+--start "$START"}
+
+  # Runs on the schedule and manual dispatch only: pull_request runs must not
+  # touch Instagram (and fork PRs cannot read secrets anyway).
+  token-health:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Instagram token health (GET /me, user_id must equal IG_USER_ID)
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        # Prints only OK/FAILED + the Graph error code/message. Never the
+        # token or either id. Exit 1 on failure => red run + GitHub email.
+        run: python3 post_today.py --check-token

@@ -418,6 +418,91 @@ class EmptySecretsTests(unittest.TestCase):
         self.assertEqual(called["n"], 0)
 
 
+class TokenHygieneTests(unittest.TestCase):
+    def test_clean_secret_strips_whitespace_quotes_newlines(self):
+        for raw in ("tok", "tok\n", "  tok \r\n", '"tok"', "'tok'\n",
+                    "\u201ctok\u201d", ' "tok"\n ', 'tok"'):
+            self.assertEqual(pt.clean_secret(raw), "tok", repr(raw))
+        self.assertEqual(pt.clean_secret(None), "")
+        self.assertEqual(pt.clean_secret('""'), "")
+        self.assertEqual(pt.clean_secret("a-b_c.d"), "a-b_c.d")
+
+    def test_quoted_blank_secret_counts_as_missing(self):
+        self.assertTrue(pt.missing_ig_secrets('""', "123"))
+        self.assertTrue(pt.missing_ig_secrets("tok", "''"))
+
+    def test_publish_receives_cleaned_secrets(self):
+        seen = {}
+
+        def pub(image_url, caption, token, ig_id):
+            seen["token"], seen["ig_id"] = token, ig_id
+            return 200, {"id": "m1"}
+
+        code = pt.run(
+            target="2026-08-26", dry=False, card_base_url=BASE,
+            token=' "tok123"\n', ig_id="'42'\n",
+            head_fn=ok_head, fetch_fn=live_ok(SAMPLE["arabic"]), publish_fn=pub,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, {"token": "tok123", "ig_id": "42"})
+
+
+class CheckTokenTests(unittest.TestCase):
+    SECRET = "SUPER-SECRET-TOKEN-VALUE"
+
+    def _get(self, http, body, seen=None):
+        def fn(url, params):
+            if seen is not None:
+                seen.update(url=url, params=dict(params))
+            return http, body
+        return fn
+
+    def test_ok_when_user_id_matches_and_token_is_cleaned(self):
+        seen = {}
+        ok, msg = pt.check_token(
+            f' "{self.SECRET}"\n', "1784\n",
+            get_fn=self._get(200, {"user_id": "1784", "username": "u"}, seen))
+        self.assertTrue(ok, msg)
+        self.assertEqual(seen["url"], "https://graph.instagram.com/v23.0/me")
+        self.assertEqual(seen["params"]["fields"], "user_id,username")
+        self.assertEqual(seen["params"]["access_token"], self.SECRET)
+        self.assertNotIn(self.SECRET, msg)
+        self.assertNotIn("1784", msg)
+
+    def test_oauth_190_fails_without_leaking_token(self):
+        body = {"error": {"message": "Cannot parse access token",
+                          "type": "OAuthException", "code": 190}}
+        ok, msg = pt.check_token(self.SECRET, "1784", get_fn=self._get(400, body))
+        self.assertFalse(ok)
+        self.assertIn("190", msg)
+        self.assertNotIn(self.SECRET, msg)
+
+    def test_user_id_mismatch_fails_without_printing_ids(self):
+        ok, msg = pt.check_token(self.SECRET, "1784",
+                                 get_fn=self._get(200, {"user_id": "9999"}))
+        self.assertFalse(ok)
+        self.assertIn("does NOT match", msg)
+        for v in (self.SECRET, "1784", "9999"):
+            self.assertNotIn(v, msg)
+
+    def test_empty_inputs_fail_without_network(self):
+        def boom(*_a, **_k):
+            raise AssertionError("no request without a token")
+        self.assertFalse(pt.check_token('""', "1", get_fn=boom)[0])
+        self.assertFalse(pt.check_token("tok", " ", get_fn=boom)[0])
+
+    def test_exception_text_is_not_echoed(self):
+        def fn(url, params):
+            raise RuntimeError(f"boom {params['access_token']}")
+        ok, msg = pt.check_token(self.SECRET, "1", get_fn=fn)
+        self.assertFalse(ok)
+        self.assertNotIn(self.SECRET, msg)
+
+    def test_missing_user_id_in_response_fails(self):
+        ok, _ = pt.check_token(self.SECRET, "1", get_fn=self._get(200, {}))
+        self.assertFalse(ok)
+
+
 class OffListQueueTests(unittest.TestCase):
     def _temp_queue(self, rows: list[dict]) -> Path:
         tmp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")

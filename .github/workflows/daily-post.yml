@@ -2,10 +2,12 @@ name: Daily Instagram Post
 
 # Fail-closed daily verse poster. 05:30 UTC == 09:30 Asia/Dubai.
 #
-# DO NOT Enable this workflow in the Actions UI until IG_ACCESS_TOKEN and
-# IG_USER_ID are minted by CoS and stored as repository secrets. Empty
-# secrets fail the job (no post, no invented token). The schedule below is
-# ready; Enable is a human step after secrets exist.
+# This workflow is enabled. It needs the repository secrets IG_ACCESS_TOKEN
+# and IG_USER_ID; empty secrets fail the job (no post, no invented token).
+# Token handling: post_today.py strips whitespace/quotes/newlines from both
+# secrets, a real post first re-checks the token (GET /me, user_id must equal
+# IG_USER_ID), the "Queue preflight" workflow re-checks it daily at 04:00 UTC,
+# and "IG token refresh" extends the ~60-day token monthly.
 #
 # Images are fetched from https://nooralhikmah.com/cards/{id}.png (not GitHub raw).
 # Captions are queued fields verified against https://nooralhikmah.com/poems/{id}.
@@ -16,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Resolve + log without posting (leave on until secrets are real)"
+        description: "Resolve + log without posting (default on; set false for a real post)"
         type: boolean
         default: true
       post_date:
@@ -48,9 +50,15 @@ jobs:
         run: |
           if [ -z "${IG_ACCESS_TOKEN}" ] || [ -z "${IG_USER_ID}" ]; then
             echo "::error::IG_ACCESS_TOKEN / IG_USER_ID are empty. Fail closed — no post, no invented token."
-            echo "Do not Enable the Daily Instagram Post schedule until CoS mints both secrets."
+            echo "Set both repository secrets (Settings > Secrets and variables > Actions)."
             exit 1
           fi
+      - name: Token health check (real post only)
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.dry_run == 'false' }}
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+        run: python post_today.py --check-token
       - name: Post today's verse
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}

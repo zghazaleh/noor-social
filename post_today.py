@@ -40,7 +40,18 @@ Config via environment (GitHub Actions secrets / workflow env):
   POST_DATE        — ISO date override (default: today, Asia/Dubai) (optional)
   SKIP_LIVE_CAPTION — "true" to skip the live poem-page check     (tests only)
 
-Exit codes: 0 = posted or successful dry-run;
+Token health check (no post, no queue access):
+  python post_today.py --check-token
+  GETs https://graph.instagram.com/v23.0/me?fields=user_id,username with IG_ACCESS_TOKEN and requires
+  the returned user_id to equal IG_USER_ID. Prints only ok/fail, the Graph
+  error code/message on failure, and whether the ids match; never the token
+  or the ids themselves.
+
+Secrets are normalised with clean_secret(): surrounding whitespace, newlines
+and quote characters (a classic copy/paste artefact behind Graph OAuth
+code 190 "Cannot parse access token") are stripped before use.
+
+Exit codes: 0 = posted or successful dry-run / token check;
             1 = miss, misconfig, or API failure.
 """
 from __future__ import annotations
@@ -236,8 +247,69 @@ def extract_poem_jsonld_text(html: str) -> str | None:
     return None
 
 
+_SECRET_QUOTES = "\"'`\u201c\u201d\u2018\u2019"
+
+
+def clean_secret(value: str | None) -> str:
+    """Strip surrounding whitespace/newlines and quote characters.
+
+    Pasted secrets often carry a trailing newline or wrapping quotes, which
+    makes Graph reject the token with OAuth code 190 "Cannot parse access
+    token". Only the ends are touched; the middle is never altered.
+    """
+    return (value or "").strip(_SECRET_QUOTES + " \t\r\n\v\f")
+
+
 def missing_ig_secrets(token: str | None, ig_id: str | None) -> bool:
-    return not (token or "").strip() or not (ig_id or "").strip()
+    return not clean_secret(token) or not clean_secret(ig_id)
+
+
+def check_token(
+    token: str | None,
+    ig_id: str | None,
+    *,
+    get_fn: Callable[..., tuple[int, dict]] | None = None,
+) -> tuple[bool, str]:
+    """Verify the token with GET /me and that user_id equals IG_USER_ID.
+
+    Returns (ok, message). The message never contains the token or the ids.
+    """
+    token = clean_secret(token)
+    ig_id = clean_secret(ig_id)
+    if not token:
+        return False, "IG_ACCESS_TOKEN is empty after cleaning"
+    if not ig_id:
+        return False, "IG_USER_ID is empty after cleaning"
+
+    def _default_get(url: str, params: dict) -> tuple[int, dict]:
+        import requests
+        resp = requests.get(url, params=params, timeout=30)
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {}
+        return resp.status_code, body if isinstance(body, dict) else {}
+
+    fetch = get_fn or _default_get
+    try:
+        http, body = fetch(f"{GRAPH}/me",
+                           {"fields": "user_id,username", "access_token": token})
+    except Exception as exc:  # exception text can embed the request URL (token)
+        return False, f"request failed ({type(exc).__name__})"
+
+    err = body.get("error")
+    if http != 200 or err:
+        err = err if isinstance(err, dict) else {}
+        return False, (f"Graph rejected the token: http={http} "
+                       f"code={err.get('code')} type={err.get('type')} "
+                       f"message={str(err.get('message'))[:120]!r}")
+
+    returned = str(body.get("user_id") or body.get("id") or "").strip()
+    if not returned:
+        return False, "Graph response had no user_id"
+    if returned != ig_id:
+        return False, "token is valid but its user_id does NOT match IG_USER_ID"
+    return True, f"token valid; user_id matches IG_USER_ID (username={body.get('username')})"
 
 
 def _miss(target: str, reason: str, **extra) -> dict:
@@ -579,6 +651,9 @@ def run(
     assert caption is not None
     image_url = public_card_url(entry["card_path"], card_base_url)
 
+    token = clean_secret(token)
+    ig_id = clean_secret(ig_id)
+
     if dry:
         log({"date": target, "status": "dry_run", "poet": entry.get("poet"),
              "poem_id": entry.get("poem_id"), "image_url": image_url,
@@ -588,8 +663,7 @@ def run(
     if missing_ig_secrets(token, ig_id):
         log({"date": target, "status": "error",
              "error": "missing IG_ACCESS_TOKEN / IG_USER_ID",
-             "note": "secrets are empty — fail closed. Do not Enable the "
-                     "schedule until CoS mints tokens. Never invent tokens."})
+             "note": "secrets are empty — fail closed. Never invent tokens."})
         return 1
 
     if publish_fn is not None:
@@ -637,6 +711,14 @@ def run(
 
 
 def main() -> int:
+    if "--check-token" in sys.argv[1:]:
+        ok, msg = check_token(os.environ.get("IG_ACCESS_TOKEN"),
+                              os.environ.get("IG_USER_ID"))
+        if ok:
+            print(f"OK: {msg}")
+            return 0
+        print(f"::error::IG token health check FAILED: {msg}")
+        return 1
     target = os.environ.get("POST_DATE") or datetime.now(DUBAI).date().isoformat()
     dry = os.environ.get("DRY_RUN", "").lower() == "true"
     base = os.environ.get("CARD_BASE_URL", "")
@@ -645,8 +727,8 @@ def main() -> int:
         target=target,
         dry=dry,
         card_base_url=base,
-        token=os.environ.get("IG_ACCESS_TOKEN", ""),
-        ig_id=os.environ.get("IG_USER_ID", ""),
+        token=clean_secret(os.environ.get("IG_ACCESS_TOKEN", "")),
+        ig_id=clean_secret(os.environ.get("IG_USER_ID", "")),
         skip_live_caption=skip_live,
     )
 

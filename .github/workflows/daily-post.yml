@@ -10,9 +10,7 @@ name: Daily Instagram Post
 # Images are fetched from https://nooralhikmah.com/cards/{id}.png (not GitHub raw).
 # Captions are queued fields verified against https://nooralhikmah.com/poems/{id}.
 on:
-  schedule:
-    # 05:30 UTC == 09:30 Asia/Dubai. GitHub cron can drift ~5-15 min; fine for a daily post.
-    - cron: "30 5 * * *"
+  # Publication paused by user approval on 2026-10-03. No cron trigger.
   workflow_dispatch:
     inputs:
       dry_run:
@@ -33,6 +31,8 @@ concurrency:
 
 jobs:
   post:
+    # Manual dispatch also remains paused until the verified release is approved.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,3 +66,4 @@ jobs:
           git add post-log.jsonl 2>/dev/null || true
           git diff --staged --quiet || git commit -m "log: daily post run $(date -u +%Y-%m-%dT%H:%MZ)"
           git push || true
+

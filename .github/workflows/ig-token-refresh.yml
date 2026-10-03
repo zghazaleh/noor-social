@@ -1,0 +1,113 @@
+name: IG token refresh
+
+# Instagram long-lived tokens last ~60 days. Refreshing monthly keeps
+# IG_ACCESS_TOKEN alive. Does not post.
+#
+#   GET https://graph.instagram.com/refresh_access_token
+#       ?grant_type=ig_refresh_token&access_token=<token>
+#
+# Output is limited to success/failure and days remaining. The token is
+# never printed (the new one is masked and only passed via a 0600 temp file).
+#
+# If Graph returns a token that differs from the stored one, the repository
+# secret must be updated or the next refresh/post would use a stale value:
+#   - optional secret GH_SECRETS_PAT (fine-grained PAT, this repo only,
+#     "Secrets: read and write") set  => IG_ACCESS_TOKEN is updated via
+#     `gh secret set`.
+#   - GH_SECRETS_PAT not set          => this run FAILS loudly (GitHub emails
+#     the repo owner); update IG_ACCESS_TOKEN by hand, then re-run.
+# GITHUB_TOKEN cannot write Actions secrets, hence the PAT.
+on:
+  schedule:
+    # 1st of every month, 02:00 UTC == 06:00 Asia/Dubai (the 04:00 UTC
+    # preflight that day re-validates the token).
+    - cron: "0 2 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ig-token-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Refresh Instagram long-lived token
+        id: refresh
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os, sys
+          import requests
+          from post_today import clean_secret
+
+          old = clean_secret(os.environ.get("IG_ACCESS_TOKEN"))
+          if not old:
+              print("::error::IG_ACCESS_TOKEN is empty - nothing to refresh.")
+              sys.exit(1)
+          try:
+              r = requests.get(
+                  "https://graph.instagram.com/refresh_access_token",
+                  params={"grant_type": "ig_refresh_token", "access_token": old},
+                  timeout=30,
+              )
+              body = r.json()
+          except Exception as exc:  # message could embed the URL (token)
+              print(f"::error::Token refresh FAILED: request error ({type(exc).__name__})")
+              sys.exit(1)
+          if not isinstance(body, dict):
+              body = {}
+          new = clean_secret(body.get("access_token"))
+          if r.status_code != 200 or not new:
+              err = body.get("error") if isinstance(body.get("error"), dict) else {}
+              print(f"::error::Token refresh FAILED: http={r.status_code} "
+                    f"code={err.get('code')} type={err.get('type')} "
+                    f"message={str(err.get('message'))[:120]!r}")
+              sys.exit(1)
+
+          secs = body.get("expires_in")
+          days = int(secs) // 86400 if isinstance(secs, (int, float)) else "unknown"
+          print(f"Token refresh SUCCEEDED. Days remaining: {days}")
+
+          changed = new != old
+          print(f"Returned token differs from stored secret: {'yes' if changed else 'no'}")
+          if changed:
+              print(f"::add-mask::{new}")
+              path = os.path.join(os.environ["RUNNER_TEMP"], "ig_new_token")
+              fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+              with os.fdopen(fd, "w") as fh:
+                  fh.write(new)
+              with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+                  out.write("changed=true\n")
+                  out.write(f"path={path}\n")
+          PY
+      - name: Update IG_ACCESS_TOKEN secret (needs GH_SECRETS_PAT)
+        if: ${{ steps.refresh.outputs.changed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_SECRETS_PAT }}
+          HAVE_PAT: ${{ secrets.GH_SECRETS_PAT != '' }}
+          NEW_TOKEN_FILE: ${{ steps.refresh.outputs.path }}
+        run: |
+          if [ "${HAVE_PAT}" != "true" ]; then
+            echo "::error::Graph returned a NEW token but GH_SECRETS_PAT is not set, so IG_ACCESS_TOKEN cannot be updated automatically."
+            echo "::error::Update IG_ACCESS_TOKEN by hand (or add GH_SECRETS_PAT: fine-grained PAT, this repo, Secrets read/write) and re-run this workflow. The old token stays valid until it expires."
+            rm -f "${NEW_TOKEN_FILE}"
+            exit 1
+          fi
+          if gh secret set IG_ACCESS_TOKEN --repo "${GITHUB_REPOSITORY}" < "${NEW_TOKEN_FILE}"; then
+            echo "IG_ACCESS_TOKEN secret updated."
+          else
+            echo "::error::gh secret set failed (check GH_SECRETS_PAT scope: Secrets read/write on this repo)."
+            rm -f "${NEW_TOKEN_FILE}"
+            exit 1
+          fi
+          rm -f "${NEW_TOKEN_FILE}"

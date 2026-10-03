@@ -18,8 +18,8 @@ miss exits 1 with no post.
 | Hard denylist | These IDs can **never** post, even if they appear on the allowlist or queue: Qabbani shipping `1370–1373`, `1491–1493`, `1607–1608`; generated cluster `1851–1857`; known off-list `1507`, `1543`, `1858`. Encoded in `post_today.py`, not a JSON someone can quietly edit. |
 | Card URL | `CARD_BASE_URL` + `card_path`. `card_path` must be `cards/{id}.png`. HEAD must be HTTP 200 with `image/png`. Cards live on the site, not in this repo. |
 | Caption | Reuse fields already on the queue row. If the row has Arabic, it must match the JSON-LD `text` on `https://nooralhikmah.com/poems/{id}`. Fetch failure or mismatch → **fail closed** (no post). Do not use `/today` as a fallback — that page is a different daily verse. Never compose new Arabic poetry. |
-| Secrets | `IG_ACCESS_TOKEN` and `IG_USER_ID` are repository secrets. Empty secrets fail a real post. Do not invent tokens. Do not commit them. |
-| Dry-run first | Manual `workflow_dispatch` defaults to dry-run. The schedule posts for real **only after** a human Enables the workflow **and** CoS has minted secrets. |
+| Secrets | `IG_ACCESS_TOKEN` and `IG_USER_ID` are repository secrets. Empty secrets fail a real post. Both are whitespace/quote/newline-stripped before use. Do not invent tokens. Do not commit them. |
+| Dry-run first | Manual `workflow_dispatch` defaults to dry-run. The schedule posts for real (fail-closed) once the workflow is enabled and both secrets are set. |
 
 ```
 authenticated-ids.json ──┐  264 IDs, denylist ∩ allowlist = ∅
@@ -44,7 +44,7 @@ today (Asia/Dubai, or `POST_DATE`). Then, in order:
 6. `CARD_BASE_URL` set (`https://nooralhikmah.com/`, trailing slash).
 7. HEAD of the public card is `200` + `image/png`.
 8. Caption authenticity: queued Arabic (if any) equals live `/poems/{id}` JSON-LD `text`; caption contains that URL and no extra Arabic.
-9. Real post only: both Meta secrets present.
+9. Real post only: both Meta secrets present, and the token passes the health check (`GET /me`, `user_id` equals `IG_USER_ID`).
 
 Any miss → exit 1, append `post-log.jsonl`, **no substitute ID**.
 
@@ -57,18 +57,19 @@ template — it fail-closes. Posting a wrong line is worse than posting nothing.
 
 | Workflow | File | Posts? | Enable? |
 |---|---|---|---|
-| **Daily Instagram Post** | `.github/workflows/daily-post.yml` | Yes, on schedule | **Leave disabled** until `IG_ACCESS_TOKEN` and `IG_USER_ID` are set. Schedule is `30 5 * * *` (09:30 Dubai). Manual run defaults to `dry_run=true`. |
+| **Daily Instagram Post** | `.github/workflows/daily-post.yml` | Yes, on schedule | Keep enabled; needs `IG_ACCESS_TOKEN` and `IG_USER_ID` (empty secrets fail the job, no post). Schedule is `30 5 * * *` (09:30 Dubai). Manual run defaults to `dry_run=true`. |
 | Publish contract tests | `.github/workflows/ci.yml` | No | Keep enabled. |
-| Queue preflight (14 days) | `.github/workflows/preflight.yml` | No | Keep enabled. Live HEAD + caption check of the next 14 days. |
+| Queue preflight (14 days) | `.github/workflows/preflight.yml` | No | Keep enabled. Live HEAD + caption check of the next 14 days. Its `token-health` job (04:00 UTC, not on PRs) calls `GET /me?fields=user_id,username` and fails if the token is invalid or its `user_id` differs from `IG_USER_ID`. |
+| IG token refresh | `.github/workflows/ig-token-refresh.yml` | No | Keep enabled. Monthly (`0 2 1 * *`) + manual. See [Token refresh](#token-refresh). |
 
 The broken one-shot `post-2026-08-28.yml` has been removed. Do not add
 push-triggered post workflows.
 
-**Enable waits for secrets.** CoS mints the Meta token separately. An empty
-secret fails the job loudly. Nobody should flip the Daily workflow to Enabled
-in the Actions UI before that.
+**Empty secrets fail loudly.** If `IG_ACCESS_TOKEN` or `IG_USER_ID` is empty
+the job fails with no post and no invented token. Keep the Daily workflow
+enabled so the schedule runs; the dry-run default only applies to manual runs.
 
-## One-time setup (repo owner / CoS)
+## One-time setup (repo owner)
 
 1. Confirm this repo is **public** (Instagram cannot fetch a private card URL).
 2. Settings → Secrets and variables → Actions:
@@ -77,12 +78,14 @@ in the Actions UI before that.
    |---|---|
    | `IG_ACCESS_TOKEN` | Instagram Graph API long-lived token |
    | `IG_USER_ID` | Instagram business account id |
+   | `GH_SECRETS_PAT` | Optional. Fine-grained PAT for this repo only, permission *Secrets: read and write*. Lets `ig-token-refresh` store a rotated token. |
    | `NOOR_PRIVATE_READ_TOKEN` | Optional. Read-only PAT for `zghazaleh/Noor-Al-Hikmah-V1.1` so CI can confirm the 264 IDs still match `content/poems/authenticated-ids.json`. |
 
 3. Actions → **Daily Instagram Post** → **Run workflow** with dry-run **on**.
    Confirm the log: `status=dry_run`, correct `poem_id`, public `image_url`.
-4. Only then: store real secrets, run dry-run once more, then Enable the
-   scheduled workflow. Flip dry-run off for a one-shot real post if needed.
+4. Store the real secrets, run dry-run once more, and confirm the
+   *Queue preflight* `token-health` job is green. Flip dry-run off for a
+   one-shot real post if needed.
 
 Never paste tokens into issues, the queue, or `zghazaleh/noor-assets`.
 
@@ -106,8 +109,27 @@ git commit -m "queue: refill from 264-ID allowlist"
 git push
 ```
 
-**Token refresh:** Instagram long-lived tokens last ~60 days. Refresh and
-update `IG_ACCESS_TOKEN` before expiry (do it alongside the monthly refill).
+### Token refresh
+
+Instagram long-lived tokens last ~60 days. Three guards keep the token healthy
+(none of them ever prints it):
+
+- `post_today.py` strips surrounding whitespace, newlines and quotes from
+  `IG_ACCESS_TOKEN` / `IG_USER_ID` (a stray newline or quote in the pasted
+  secret causes Graph OAuth 190 "Cannot parse access token").
+- `python post_today.py --check-token` (run daily at 04:00 UTC by the preflight
+  workflow and before every real post) does `GET /me?fields=user_id,username`
+  and fails if the token is rejected or the returned `user_id` is not
+  `IG_USER_ID`. Output is only OK/FAILED plus the Graph error code/message.
+- **IG token refresh** (`ig-token-refresh.yml`, monthly + *Run workflow*) calls
+  `refresh_access_token`, prints only success/failure and days remaining, and
+  if Graph returns a different token it updates `IG_ACCESS_TOKEN` via
+  `gh secret set` **when `GH_SECRETS_PAT` is set**. Without the PAT the run
+  fails on purpose (GitHub emails the owner): update the secret by hand. The
+  built-in `GITHUB_TOKEN` cannot write Actions secrets.
+
+A token must be at least 24 hours old and not yet expired to be refreshed; if
+it has already expired, mint a new one and store it as `IG_ACCESS_TOKEN`.
 
 **Allowlist sync:** `sync_allowlist.py --write` copies the private file only
 when the fetched set is 264 IDs with an empty denylist intersection. It will

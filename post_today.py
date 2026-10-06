@@ -11,7 +11,7 @@ Fail-closed gates (any miss → exit 1, no post):
   - entry has no poem_id, or is disabled
   - poem_id is on the hard denylist (even if also on the allowlist)
   - poem_id is not in authenticated-ids.json
-  - allowlist fails integrity (count != 264 or denylist intersection)
+  - allowlist fails integrity (count != 255 or denylist intersection)
   - card_path is missing, is not cards/{id}.png, or HEAD of
     CARD_BASE_URL + card_path is not HTTP 200 with an image/png content-type
   - caption cannot be authenticated (verse not on the queue entry and/or
@@ -66,7 +66,7 @@ SITE_ORIGIN = "https://nooralhikmah.com"
 HEAD_TIMEOUT = 20
 HEAD_UA = "noor-social-post-today/1.0"
 PNG_TYPES = frozenset({"image/png", "image/x-png"})
-EXPECTED_ALLOWLIST_COUNT = 264
+EXPECTED_ALLOWLIST_COUNT = 255
 
 # Hard denylist — never post, even if the ID is on the allowlist or queue.
 # Qabbani shipping leaks, generated cluster, and known off-list IDs.
@@ -128,7 +128,7 @@ def arabic_tokens(text: str) -> list[str]:
 
 
 def allowlist_integrity_error(ids: set[str]) -> str | None:
-    """Return a reason if the allowlist is not the 264-ID certified set."""
+    """Return a reason if the allowlist is not the 255-ID certified set."""
     if len(ids) != EXPECTED_ALLOWLIST_COUNT:
         return (
             f"allowlist count is {len(ids)}, expected {EXPECTED_ALLOWLIST_COUNT} "

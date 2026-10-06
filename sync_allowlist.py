@@ -3,7 +3,7 @@
 sync_allowlist.py — integrity check (and optional copy) of authenticated-ids.json.
 
 Local contract (always):
-  - exactly 264 unique IDs
+  - exactly 255 unique IDs
   - empty intersection with the hard denylist
   - no invented IDs
 
@@ -76,7 +76,7 @@ def fetch_private_allowlist(token: str) -> tuple[set[str], str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Check / sync the 264-ID allowlist.")
+    parser = argparse.ArgumentParser(description="Check / sync the 255-ID allowlist.")
     parser.add_argument("--check", action="store_true", default=True,
                         help="Integrity check (default)")
     parser.add_argument("--write", action="store_true",
@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(report, indent=2))
         print(
-            "ALLOWLIST OK (local): 264 IDs, denylist intersection empty. "
+            "ALLOWLIST OK (local): 255 IDs, denylist intersection empty. "
             "Remote compare skipped."
         )
         return 0
@@ -143,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         report["wrote"] = str(path)
 
     print(json.dumps(report, indent=2))
-    print("ALLOWLIST OK: local matches private 264-ID contract.")
+    print("ALLOWLIST OK: local matches private 255-ID contract.")
     return 0
 
 

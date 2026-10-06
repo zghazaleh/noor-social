@@ -18,15 +18,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Allowlist integrity (264, denylist empty)
+      - name: Allowlist integrity (255, denylist empty)
         env:
           NOOR_PRIVATE_READ_TOKEN: ${{ secrets.NOOR_PRIVATE_READ_TOKEN }}
         run: python3 sync_allowlist.py --check
       - name: Unit + live contract tests
         env:
           CARD_BASE_URL: https://nooralhikmah.com/
-        run: python3 -m unittest test_post_today.py -v
-      - name: Preflight next 14 days (shape only)
+        run: python3 -m unittest test_post_today.py test_publication_pause.py -v
+      - name: Validate all enabled future queue rows (shape only; holds preserved)
         env:
           CARD_BASE_URL: https://nooralhikmah.com/
-        run: python3 preflight.py --days 14 --skip-live
+        run: python3 preflight.py --queue-only

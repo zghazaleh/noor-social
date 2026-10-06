@@ -10,21 +10,26 @@ stay public: Instagram only fetches `https://nooralhikmah.com/cards/{id}.png`.
 poem ID, never substitutes another ID, and never composes Arabic verse. Any
 miss exits 1 with no post.
 
+**Publication is paused pending explicit verified-release approval.** The daily
+cron is removed and the manual publishing job is hard-disabled. Validation
+and allowlist synchronization do not authorize a restart. Existing disabled
+queue rows remain holds, including withdrawn ID 1566 on November 12.
+
 ## Publishing contract
 
 | Rule | Detail |
 |---|---|
-| Allowlist only | Instagram may emit only the **264** IDs in `authenticated-ids.json`. That file is a copy of `content/poems/authenticated-ids.json` in the private product repo (`zghazaleh/Noor-Al-Hikmah-V1.1`). Do not invent IDs. |
+| Allowlist only | Instagram may emit only the **255** IDs in `authenticated-ids.json`. That file is a copy of `content/poems/authenticated-ids.json` in the private product repo (`zghazaleh/Noor-Al-Hikmah-V1.1`). Do not invent IDs. |
 | Hard denylist | These IDs can **never** post, even if they appear on the allowlist or queue: Qabbani shipping `1370–1373`, `1491–1493`, `1607–1608`; generated cluster `1851–1857`; known off-list `1507`, `1543`, `1858`. Encoded in `post_today.py`, not a JSON someone can quietly edit. |
 | Card URL | `CARD_BASE_URL` + `card_path`. `card_path` must be `cards/{id}.png`. HEAD must be HTTP 200 with `image/png`. Cards live on the site, not in this repo. |
 | Caption | Reuse fields already on the queue row. If the row has Arabic, it must match the JSON-LD `text` on `https://nooralhikmah.com/poems/{id}`. Fetch failure or mismatch → **fail closed** (no post). Do not use `/today` as a fallback — that page is a different daily verse. Never compose new Arabic poetry. |
 | Secrets | `IG_ACCESS_TOKEN` and `IG_USER_ID` are repository secrets. Empty secrets fail a real post. Do not invent tokens. Do not commit them. |
-| Dry-run first | Manual `workflow_dispatch` defaults to dry-run. The schedule posts for real **only after** a human Enables the workflow **and** CoS has minted secrets. |
+| Publication pause | No daily cron. Manual `workflow_dispatch` remains hard-disabled pending explicit verified-release approval. |
 
 ```
-authenticated-ids.json ──┐  264 IDs, denylist ∩ allowlist = ∅
+authenticated-ids.json ──┐  255 IDs, denylist ∩ allowlist = ∅
 DENYLIST (in code)       ─┤
-broadcast-queue.json     ─┤→  GitHub Action (cron 05:30 UTC = 09:30 Dubai)
+broadcast-queue.json     ─┤→  GitHub Action (publication paused)
 post_today.py            ─┤        HEAD  https://nooralhikmah.com/cards/{id}.png
                          ─┤        GET   https://nooralhikmah.com/poems/{id}
                          ─┘        → Instagram Graph API (@nooralhikmahapp)
@@ -39,7 +44,7 @@ today (Asia/Dubai, or `POST_DATE`). Then, in order:
 1. Queue row exists and is not `disabled`.
 2. `poem_id` present.
 3. `poem_id` not on the hard denylist.
-4. `poem_id` on the 264-ID allowlist (count and denylist intersection checked at load).
+4. `poem_id` on the 255-ID allowlist (count and denylist intersection checked at load).
 5. `card_path == cards/{id}.png`.
 6. `CARD_BASE_URL` set (`https://nooralhikmah.com/`, trailing slash).
 7. HEAD of the public card is `200` + `image/png`.
@@ -57,16 +62,15 @@ template — it fail-closes. Posting a wrong line is worse than posting nothing.
 
 | Workflow | File | Posts? | Enable? |
 |---|---|---|---|
-| **Daily Instagram Post** | `.github/workflows/daily-post.yml` | Yes, on schedule | **Leave disabled** until `IG_ACCESS_TOKEN` and `IG_USER_ID` are set. Schedule is `30 5 * * *` (09:30 Dubai). Manual run defaults to `dry_run=true`. |
+| **Daily Instagram Post** | `.github/workflows/daily-post.yml` | Paused | No cron; manual job hard-disabled. Explicit verified-release approval required to restart. |
 | Publish contract tests | `.github/workflows/ci.yml` | No | Keep enabled. |
 | Queue preflight (14 days) | `.github/workflows/preflight.yml` | No | Keep enabled. Live HEAD + caption check of the next 14 days. |
 
 The broken one-shot `post-2026-08-28.yml` has been removed. Do not add
 push-triggered post workflows.
 
-**Enable waits for secrets.** CoS mints the Meta token separately. An empty
-secret fails the job loudly. Nobody should flip the Daily workflow to Enabled
-in the Actions UI before that.
+**Restart requires explicit approval.** Secrets and passing validation alone
+do not authorize publication.
 
 ## One-time setup (repo owner / CoS)
 
@@ -77,24 +81,22 @@ in the Actions UI before that.
    |---|---|
    | `IG_ACCESS_TOKEN` | Instagram Graph API long-lived token |
    | `IG_USER_ID` | Instagram business account id |
-   | `NOOR_PRIVATE_READ_TOKEN` | Optional. Read-only PAT for `zghazaleh/Noor-Al-Hikmah-V1.1` so CI can confirm the 264 IDs still match `content/poems/authenticated-ids.json`. |
+   | `NOOR_PRIVATE_READ_TOKEN` | Optional. Read-only PAT for `zghazaleh/Noor-Al-Hikmah-V1.1` so CI can confirm the 255 IDs still match `content/poems/authenticated-ids.json`. |
 
-3. Actions → **Daily Instagram Post** → **Run workflow** with dry-run **on**.
-   Confirm the log: `status=dry_run`, correct `poem_id`, public `image_url`.
-4. Only then: store real secrets, run dry-run once more, then Enable the
-   scheduled workflow. Flip dry-run off for a one-shot real post if needed.
+3. Keep publication paused until the verified release is explicitly approved.
 
 Never paste tokens into issues, the queue, or `zghazaleh/noor-assets`.
 
 ## Monthly maintenance
 
-Refill `broadcast-queue.json` from the **264-ID allowlist only**. Every future
+Refill `broadcast-queue.json` from the **255-ID allowlist only**. Every enabled future
 row must have `poem_id` on that list, not on the denylist, and
 `card_path=cards/{poem_id}.png`. Copy verse text from shipping JSON or the
 live poem page. **Do not invent verses. Do not pad with off-list IDs.**
 
 ```bash
-python3 sync_allowlist.py --check          # 264 + denylist empty; remote compare if token set
+python3 preflight.py --queue-only         # all enabled future rows; disabled holds retained
+python3 sync_allowlist.py --check          # 255 + denylist empty; remote compare if token set
 python3 preflight.py --days 14             # upcoming days vs allowlist/denylist/live PNG/caption
 
 # After building the next calendar from the private allowlist only:
@@ -102,15 +104,19 @@ python3 preflight.py --days 14             # upcoming days vs allowlist/denylist
 cp /path/to/broadcast-queue.json broadcast-queue.json
 python3 -m unittest test_post_today.py -v
 git add authenticated-ids.json broadcast-queue.json
-git commit -m "queue: refill from 264-ID allowlist"
+git commit -m "queue: refill from 255-ID allowlist"
 git push
 ```
 
 **Token refresh:** Instagram long-lived tokens last ~60 days. Refresh and
 update `IG_ACCESS_TOKEN` before expiry (do it alongside the monthly refill).
 
+The local 255-ID copy matches the product source retrieved on October 6.
+Count integrity alone cannot detect a same-size membership change; configure
+`NOOR_PRIVATE_READ_TOKEN` for the existing fail-closed remote comparison.
+
 **Allowlist sync:** `sync_allowlist.py --write` copies the private file only
-when the fetched set is 264 IDs with an empty denylist intersection. It will
+when the fetched set is 255 IDs with an empty denylist intersection. It will
 not invent or keep a drifting set.
 
 ## Local / CI commands
@@ -129,6 +135,6 @@ verify the live poem page.
 
 The cards are images of public-domain classical Arabic verse, created to be
 posted publicly. Instagram can only fetch images from public URLs. Those URLs
-are on the live site (`nooralhikmah.com/cards/{id}.png`), gated to the 264
+are on the live site (`nooralhikmah.com/cards/{id}.png`), gated to the 255
 certified IDs — not GitHub raw. Keep secrets out of this repo and out of
 `noor-assets`.

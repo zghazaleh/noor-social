@@ -78,18 +78,18 @@ class DenylistTests(unittest.TestCase):
 
 
 class AllowlistIntegrityTests(unittest.TestCase):
-    def test_certified_count_is_264(self):
+    def test_certified_count_is_255(self):
         self.assertEqual(len(ALLOW), pt.EXPECTED_ALLOWLIST_COUNT)
-        self.assertEqual(pt.EXPECTED_ALLOWLIST_COUNT, 264)
+        self.assertEqual(pt.EXPECTED_ALLOWLIST_COUNT, 255)
 
     def test_load_allowlist_rejects_wrong_count(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "authenticated-ids.json"
-            ids = sorted(ALLOW, key=lambda x: int(x))[:263]
+            ids = sorted(ALLOW, key=lambda x: int(x))[:254]
             path.write_text(json.dumps({"ids": ids}), encoding="utf-8")
             with self.assertRaises(ValueError) as ctx:
                 pt.load_allowlist(path)
-            self.assertIn("263", str(ctx.exception))
+            self.assertIn("254", str(ctx.exception))
 
     def test_load_allowlist_rejects_denylist_intersection(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -112,6 +112,12 @@ class AllowlistIntegrityTests(unittest.TestCase):
         env = {k: v for k, v in os.environ.items() if k != "NOOR_PRIVATE_READ_TOKEN"}
         with mock.patch.dict(os.environ, env, clear=True):
             self.assertEqual(sync_allowlist.main(["--check"]), 0)
+
+    def test_sync_rejects_same_count_membership_drift(self):
+        remote = (ALLOW - {"1501"}) | {"1566"}
+        with mock.patch.dict(os.environ, {"NOOR_PRIVATE_READ_TOKEN": "test-only"}), \
+                mock.patch.object(sync_allowlist, "fetch_private_allowlist", return_value=(remote, "")):
+            self.assertEqual(sync_allowlist.main(["--check"]), 1)
 
 
 class EvaluateEntryTests(unittest.TestCase):
@@ -508,7 +514,8 @@ class OffListQueueTests(unittest.TestCase):
 
 class QueueContractTests(unittest.TestCase):
     def test_every_poem_id_on_allowlist(self):
-        ids = [str(e["poem_id"]) for e in QUEUE["queue"]]
+        ids = [str(e["poem_id"]) for e in QUEUE["queue"]
+               if e.get("disabled") is not True]
         off = [i for i in ids if i not in ALLOW]
         self.assertEqual(off, [], f"off-list IDs in queue: {off}")
 
@@ -536,7 +543,10 @@ class QueueContractTests(unittest.TestCase):
                 e["scheduled_for"][:10], e, ALLOW,
                 card_base_url=BASE, head_fn=ok_head,
             )
-            self.assertIsNone(miss, f"unexpected miss for {e['poem_id']}: {miss}")
+            if e.get("disabled") is True:
+                self.assertEqual(miss["reason"], "disabled")
+            else:
+                self.assertIsNone(miss, f"unexpected miss for {e['poem_id']}: {miss}")
 
     def test_queue_captions_are_authentic_against_own_arabic(self):
         for e in QUEUE["queue"]:
@@ -552,7 +562,7 @@ class QueueContractTests(unittest.TestCase):
             "https://nooralhikmah.com/cards/1.png",
         )
 
-    def test_preflight_next_days_pass_without_live(self):
+    def test_preflight_preserves_disabled_holds(self):
         start = QUEUE["queue"][0]["scheduled_for"][:10]
         misses = preflight.check_days(
             preflight.upcoming_dates(start, min(14, len(QUEUE["queue"]))),
@@ -561,7 +571,28 @@ class QueueContractTests(unittest.TestCase):
             skip_live_caption=True,
             skip_live_head=True,
         )
-        self.assertEqual(misses, [])
+        expected = [e for e in QUEUE["queue"][:14] if e.get("disabled") is True]
+        self.assertEqual([m["poem_id"] for m in misses], [e["poem_id"] for e in expected])
+        self.assertTrue(all(m["reason"] == "disabled" for m in misses))
+
+    def test_all_enabled_future_rows_pass_current_allowlist(self):
+        self.assertEqual(preflight.check_future_queue(
+            QUEUE["queue"], start="2026-10-06", allow=ALLOW,
+        ), [])
+
+    def test_withdrawn_november_row_fails_if_enabled(self):
+        row = dict(next(e for e in QUEUE["queue"] if e["scheduled_for"] == "2026-11-12"))
+        self.assertEqual(row["poem_id"], "1566")
+        self.assertTrue(row["disabled"])
+        self.assertNotIn("1566", ALLOW)
+        self.assertEqual(preflight.check_future_queue([row], start="2026-10-06", allow=ALLOW), [])
+        row["disabled"] = False
+        misses = preflight.check_future_queue([row], start="2026-10-06", allow=ALLOW)
+        self.assertEqual(misses[0]["reason"], "not_in_allowlist")
+
+    def test_future_queue_rejects_wrong_count_allowlist(self):
+        misses = preflight.check_future_queue([], start="2026-10-06", allow=ALLOW - {"1501"})
+        self.assertEqual(misses[0]["reason"], "allowlist_unreadable")
 
 
 class LiveHeadTests(unittest.TestCase):

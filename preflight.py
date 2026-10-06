@@ -4,7 +4,7 @@ preflight.py — fail-closed check of the next N queue days.
 
 Verifies each upcoming broadcast-queue.json row against:
   - hard denylist
-  - authenticated-ids.json (264)
+  - authenticated-ids.json (255)
   - card_path == cards/{id}.png
   - live PNG HEAD (CARD_BASE_URL + card_path → 200 image/png)
   - caption authenticity (queued Arabic == live /poems/{id} JSON-LD)
@@ -68,9 +68,40 @@ def check_days(
     return misses
 
 
+def check_future_queue(rows: list[dict], *, start: str, allow: set[str]) -> list[dict]:
+    """Check every enabled future row, including dates beyond the live window.
+
+    Disabled rows are retained as holds, not treated as approved content.
+    This local check does not authorize publication or replace live preflight.
+    """
+    error = pt.allowlist_integrity_error(allow)
+    if error:
+        return [pt._miss(start, "allowlist_unreadable", error=error)]
+    first = datetime.fromisoformat(start).date()
+    misses = []
+    for entry in rows:
+        day = datetime.fromisoformat(entry["scheduled_for"]).date()
+        if day < first:
+            continue
+        if entry.get("disabled") is True or str(entry.get("status") or "").lower() == "disabled":
+            continue
+        _, miss = pt.evaluate_post(
+            day.isoformat(), entry, allow,
+            card_base_url="https://nooralhikmah.com/",
+            head_fn=lambda _url: (200, "image/png"), skip_live_caption=True,
+        )
+        if miss:
+            misses.append(miss)
+    return misses
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Preflight the next N queue days.")
     parser.add_argument("--days", type=int, default=14, help="How many days ahead (default 14)")
+    parser.add_argument(
+        "--queue-only", action="store_true",
+        help="Validate all enabled future rows locally; preserve disabled holds (no network)",
+    )
     parser.add_argument(
         "--start",
         default="",
@@ -90,6 +121,16 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"status": "miss", "reason": "allowlist_unreadable", "error": str(exc)}))
         return 1
+
+    if args.queue_only:
+        try:
+            rows = json.loads(pt.QUEUE.read_text(encoding="utf-8"))["queue"]
+            misses = check_future_queue(rows, start=start, allow=allow)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(json.dumps({"status": "miss", "reason": "queue_unreadable", "error": str(exc)}))
+            return 1
+        print(json.dumps({"start": start, "misses": misses, "ok": not misses}, indent=2))
+        return 1 if misses else 0
 
     dates = upcoming_dates(start, args.days)
     misses = check_days(
